@@ -1,0 +1,303 @@
+
+Project 1: Simple CI/CD Pipeline for a Static Website using Jenkins & AWS S3
+
+Goal: Automate the deployment of a static website (HTML, CSS, JS) using Jenkins, GitHub, and AWS S3.
+Tools Used: Jenkins, GitHub, AWS S3, AWS CLI
+Workflow:
+1. Developer pushes code to GitHub.
+2. Jenkins detects changes, fetches the latest code, and syncs it to an S3 bucket.
+3. AWS S3 serves the website.
+
+Step 1: Setup AWS S3 for Static Website Hosting
+1. Create an S3 Bucket:
+    - Go to AWS Console → S3 → Create Bucket.
+    - Name: 'my-static-website-bucket'.
+    - Uncheck "Block all public access" (for public website).
+    - Enable "Static website hosting" and select "Use this bucket to host a website".
+    - Note the Bucket URL.
+
+2. Set Bucket Policy for Public Access:
+    - Go to Permissions → Bucket Policy and paste:
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::my-static-website-bucket/*"
+        }
+        ]
+    }
+
+Step 2: Install Jenkins on AWS EC2
+1. Launch EC2 Instance:
+    - OS: Amazon Linux 2
+    - Security Group: Open ports 22, 8080 (for SSH & Jenkins).
+
+2. Install Jenkins:
+    sudo yum update -y
+    sudo amazon-linux-extras enable java-openjdk11
+    sudo yum install java-11-openjdk -y
+    sudo wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat/jenkins.repo
+    sudo rpm --import https://pkg.jenkins.io/redhat/jenkins.io-2023.key
+    sudo yum install jenkins -y
+    sudo systemctl enable jenkins
+    sudo systemctl start jenkins
+
+3. Access Jenkins UI:
+    - Go to http://<EC2-Public-IP>:8080
+    - Get admin password: sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+    - Install suggested plugins & create an admin user.
+
+Step 3: Setup GitHub Repository
+1. Create a new GitHub repo (static-website-demo).
+2. Add a simple index.html file:
+<html>
+<head><title>My Static Website</title></head>
+<body><h1>Welcome to My Website!</h1></body>
+</html>
+
+3. Push Code to GitHub:
+git init
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git remote add origin https://github.com/your-username/static-website-demo.git
+git push -u origin main
+
+Step 4: Configure Jenkins Job
+1. Create a new Jenkins Job:
+    - Go to Jenkins Dashboard → New Item → Freestyle Project.
+    - Name: Static-Website-CI-CD.
+    - Select Git → Add repo URL: https://github.com/your-username/static-website-demo.git.
+    - Select "Poll SCM" → Add schedule: H/5 * * * * (checks for updates every 5 mins).
+
+2. Add Build Steps:
+    - Click "Add build step" → Select "Execute shell".
+    - Add the following script to sync the website with S3:
+    # Install AWS CLI (if not installed)
+    sudo yum install aws-cli -y
+
+    # Configure AWS CLI (Run manually once)
+    aws configure set aws_access_key_id YOUR_ACCESS_KEY
+    aws configure set aws_secret_access_key YOUR_SECRET_KEY
+    aws configure set region us-east-1
+
+    # Sync files to S3 bucket
+    aws s3 sync . s3://my-static-website-bucket --delete
+
+    - Click "Save".
+
+Step 5: Test the CI/CD Pipeline
+1. Trigger a Build Manually:
+    - Go to Jenkins Dashboard → Static-Website-CI-CD → Build Now.
+    - Check the console logs.
+
+2. Update index.html in GitHub:
+<h1>Welcome to My Updated Website!</h1>
+
+3. Commit & Push Changes:
+git add index.html
+git commit -m "Updated homepage"
+git push origin main
+
+Jenkins will detect the change and deploy it automatically.
+
+Step 6: Verify Deployment
+- Visit http://my-static-website-bucket.s3-website-us-east-1.amazonaws.com/
+- You should see the updated website!
+
+Step 7: Add AWS CloudFront for Faster Content Delivery
+1. Create a CloudFront Distribution:
+    - Go to AWS Console → CloudFront → Create Distribution
+    - Select Origin Domain → Choose your S3 bucket (my-static-website-bucket).
+    - Enable Caching → Keep the default cache policy.
+    - Create Distribution → Copy the CloudFront URL (e.g., https://d123456.cloudfront.net).
+
+2. Update S3 Bucket Policy for CloudFront:
+    - If using OAC (Origin Access Control), CloudFront will automatically access S3.
+    - Otherwise, update the bucket policy to allow CloudFront.
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "cloudfront.amazonaws.com"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::my-static-website-bucket/*",
+            "Condition": {
+                "StringEquals": {
+                    "AWS:SourceArn": "arn:aws:cloudfront::ACCOUNT_ID:distribution/DISTRIBUTION_ID"
+                }
+            }
+        }
+        ]
+    }
+
+3. Update Jenkins to Use CloudFront URL:
+    - Update index.html to use CloudFront URL for assets.
+    - Run aws cloudfront create-invalidation in Jenkins after deployment:
+    aws cloudfront create-invalidation --distribution-id DISTRIBUTION_ID --paths "/*"
+
+Step 8: Automate Everything with Terraform
+1. Install Terraform on Your EC2 Instance:
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo yum install -y terraform
+terraform -version
+
+2. Create main.tf for Terraform:
+provider "aws" {
+  region = "us-east-1"
+}
+
+resource "aws_s3_bucket" "static_website" {
+  bucket = "my-static-website-bucket"
+  acl    = "public-read"
+
+  website {
+    index_document = "index.html"
+    error_document = "error.html"
+  }
+}
+
+resource "aws_s3_bucket_policy" "public_access" {
+  bucket = aws_s3_bucket.static_website.id
+  policy = <<POLICY
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+    {
+        "Effect": "Allow",
+        "Principal": "*",
+        "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::my-static-website-bucket/*"
+    }
+    ]
+  }
+  POLICY
+}
+
+resource "aws_cloudfront_distribution" "cdn" {
+  origin {
+    domain_name = aws_s3_bucket.static_website.bucket_regional_domain_name
+    origin_id   = "S3-${aws_s3_bucket.static_website.id}"
+  }
+
+  enabled             = true
+  default_root_object = "index.html"
+
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "S3-${aws_s3_bucket.static_website.id}"
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+}
+
+3. Apply Terraform Configuration:
+terraform init
+terraform apply -auto-approve
+
+4. Update Jenkins to Deploy Using Terraform:
+cd /var/lib/jenkins/workspace/Static-Website-CI-CD
+terraform init
+terraform apply -auto-approve
+aws cloudfront create-invalidation --distribution-id DISTRIBUTION_ID --paths "/*"
+
+Step 9: Verify Everything
+- Check https://d123456.cloudfront.net (CloudFront URL).
+- Update the site → Check if CloudFront invalidation works.
+
+Step 10: Enable HTTPS with AWS Certificate Manager (ACM)
+1. Request an SSL Certificate in ACM:
+    - Go to AWS Console → ACM → Request a Certificate
+    - Choose "Request a public certificate" → Click Next
+    - Enter your domain name (e.g., www.yourdomain.com)
+    - Select "DNS Validation" → Click Request
+    - Validate Certificate in Route 53 by adding a CNAME record
+
+2. Attach SSL Certificate to CloudFront:
+Modify Terraform main.tf:
+resource "aws_cloudfront_distribution" "cdn" {
+  origin {
+    domain_name = aws_s3_bucket.static_website.bucket_regional_domain_name
+    origin_id   = "S3-${aws_s3_bucket.static_website.id}"
+  }
+
+  enabled             = true
+  default_root_object = "index.html"
+
+  aliases = ["www.yourdomain.com"]
+
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "S3-${aws_s3_bucket.static_website.id}"
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = "arn:aws:acm:us-east-1:YOUR_ACCOUNT_ID:certificate/YOUR_CERT_ID"
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+}
+
+3. Deploy Changes:
+terraform apply -auto-approve
+
+Step 11: Configure Route 53 for a Custom Domain
+1. Buy a Domain (if not purchased):
+    - Go to AWS Route 53 → Register a domain
+    - Buy a domain (e.g., yourdomain.com)
+
+2. Create a Hosted Zone:
+    - Go to Route 53 → Hosted Zones → Create Hosted Zone
+    - Enter yourdomain.com → Click Create
+    - Copy NS Records and update them in your domain registrar.
+
+3. Create an Alias Record for CloudFront:
+    - Go to Hosted Zone → Click "Create Record"
+    - Select Record Type: A (Alias)
+    - Alias Target: Select your CloudFront distribution
+    - Click Create Record
+
+Step 12: Integrate Slack/Email Notifications in Jenkins
+1. Install Slack Plugin in Jenkins:
+    - Go to Jenkins → Manage Jenkins → Manage Plugins
+    - Search "Slack Notification Plugin" and install it
+
+2. Create a Slack Webhook:
+    - Go to Slack → Apps → Incoming Webhooks
+    - Create a webhook and copy the Webhook URL
+
+3. Configure Jenkins to Send Slack Alerts:
+Modify post-build step in Jenkins pipeline:
+curl -X POST --data-urlencode "payload={
+  "channel": "#deployments",
+  "username": "jenkins",
+  "text": "Deployment Successful! Website updated: https://www.yourdomain.com",
+  "icon_emoji": ":rocket:"
+}" https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK
